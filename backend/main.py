@@ -14,6 +14,7 @@ from datetime import datetime
 import uuid
 import tempfile
 import openpyxl
+import asyncio
 
 import os
 import sys
@@ -359,47 +360,57 @@ async def _generate_model_task(
     try:
         jobs[job_id]["status"] = "processing"
         jobs[job_id]["progress"] = 5
-        jobs[job_id]["message"] = "Fetching real financial data from Alpha Vantage API..."
+        jobs[job_id]["message"] = "Fetching financial data from multiple sources in parallel..."
         
-        # Step 0: Fetch data from Alpha Vantage (PRIMARY - has real data)
-        alpha_vantage_data = {}
-        try:
-            logger.info(f"Fetching Alpha Vantage data for {symbol}")
-            alpha_vantage_data = fetch_alpha_vantage_data(symbol)
-            if alpha_vantage_data.get('company_info'):
-                logger.info(f"Alpha Vantage: Got real data - Shares: {alpha_vantage_data['company_info'].get('shares_outstanding')}, "
-                           f"Market Cap: {alpha_vantage_data['company_info'].get('market_cap')}")
-        except Exception as e:
-            logger.warning(f"Alpha Vantage fetch failed: {e}")
+        # Helper wrappers for sync functions
+        loop = asyncio.get_event_loop()
         
-        jobs[job_id]["progress"] = 15
-        jobs[job_id]["message"] = "Fetching additional data from Yahoo Finance..."
+        async def fetch_av():
+            try:
+                logger.info(f"Fetching Alpha Vantage data for {symbol}")
+                return await loop.run_in_executor(None, fetch_alpha_vantage_data, symbol)
+            except Exception as e:
+                logger.warning(f"Alpha Vantage fetch failed: {e}")
+                return {}
+
+        async def fetch_sc():
+            try:
+                return await loop.run_in_executor(None, fetch_screener_data, symbol)
+            except Exception as e:
+                logger.warning(f"Screener scraping failed: {e}")
+                return {}
+
+        async def fetch_yf():
+            try:
+                logger.info(f"Fetching Yahoo Finance data for {symbol}")
+                return await fetch_stock_data(symbol, exchange)
+            except Exception as e:
+                logger.warning(f"Yahoo fetch failed: {e}")
+                return {}
+
+        # 1. Start parallel fetching for Company Data
+        av_task = asyncio.create_task(fetch_av())
+        sc_task = asyncio.create_task(fetch_sc())
+        yf_task = asyncio.create_task(fetch_yf())
         
-        # Step 1: Fetch data from Yahoo Finance
-        logger.info(f"Fetching Yahoo Finance data for {symbol}")
-        yahoo_data = await fetch_stock_data(symbol, exchange)
+        alpha_vantage_data, screener_data, yahoo_data = await asyncio.gather(av_task, sc_task, yf_task)
         
-        jobs[job_id]["progress"] = 25
-        jobs[job_id]["message"] = "Scraping real financials from Screener.in..."
-        
-        # Step 2: Fetch detailed data from Screener.in
-        try:
-            screener_data = fetch_screener_data(symbol)
-            logger.info(f"Screener data fetched: {len(screener_data.get('annual_results', []))} annual records")
-        except Exception as e:
-            logger.warning(f"Screener scraping failed: {e}")
-            screener_data = {}
+        # Log success
+        if alpha_vantage_data.get('company_info'):
+            logger.info("Alpha Vantage: Got real data")
+        if screener_data.get('annual_results'):
+            logger.info(f"Screener data fetched: {len(screener_data['annual_results'])} records")
         
         jobs[job_id]["progress"] = 35
         jobs[job_id]["message"] = "Fetching Damodaran industry benchmarks..."
         
-        # Step 3: Get Damodaran industry-specific assumptions
+        # 2. Fetch Damodaran data (depends on Yahoo industry)
         company_info = yahoo_data.get('company_info', {})
         yahoo_industry = company_info.get('industry', 'Unknown')
         damodaran_industry = map_yahoo_industry(yahoo_industry)
         
         try:
-            damodaran_data = get_all_industry_data(damodaran_industry)
+            damodaran_data = await loop.run_in_executor(None, get_all_industry_data, damodaran_industry)
             logger.info(f"Damodaran data fetched for: {damodaran_industry}")
         except Exception as e:
             logger.warning(f"Damodaran fetch failed: {e}")
