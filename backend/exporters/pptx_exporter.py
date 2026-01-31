@@ -11,28 +11,23 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Try to import python-pptx
-PPTX_AVAILABLE = False
-COLORS = {}
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RgbColor
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.shapes import MSO_SHAPE
+PPTX_AVAILABLE = True
 
-try:
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
-    from pptx.dml.color import RgbColor
-    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-    from pptx.enum.shapes import MSO_SHAPE
-    PPTX_AVAILABLE = True
-    
-    # Color scheme
-    COLORS = {
-        'primary': RgbColor(0x1a, 0x36, 0x5d),  # Dark blue
-        'secondary': RgbColor(0x38, 0xa1, 0x69),  # Green
-        'accent': RgbColor(0x66, 0x5d, 0xc3),  # Purple
-        'text': RgbColor(0x2d, 0x37, 0x48),  # Dark gray
-        'light': RgbColor(0xf7, 0xfa, 0xfc),  # Light gray
-        'white': RgbColor(0xff, 0xff, 0xff),
-    }
-except ImportError:
-    logger.warning("python-pptx not installed. Run: pip install python-pptx")
+# Color scheme
+COLORS = {
+    'primary': RgbColor(0x1a, 0x36, 0x5d),  # Dark blue
+    'secondary': RgbColor(0x38, 0xa1, 0x69),  # Green
+    'accent': RgbColor(0x66, 0x5d, 0xc3),  # Purple
+    'text': RgbColor(0x2d, 0x37, 0x48),  # Dark gray
+    'light': RgbColor(0xf7, 0xfa, 0xfc),  # Light gray
+    'white': RgbColor(0xff, 0xff, 0xff),
+}
+
 
 
 def generate_pptx_report(
