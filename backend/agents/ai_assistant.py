@@ -58,9 +58,18 @@ def setup_gemini():
     return genai.GenerativeModel('gemini-1.5-flash')
 
 
+
+# Import Bytez client
+try:
+    from agents.bytez_client import get_bytez_client
+    BYTEZ_AVAILABLE = True
+except ImportError:
+    BYTEZ_AVAILABLE = False
+    logger.warning("Bytez client import failed")
+
 def call_ai(prompt: str, system_prompt: str = None) -> Optional[str]:
     """
-    Call AI API (OpenAI preferred, Gemini fallback)
+    Call AI API (Bytez preferred, then OpenAI, then Gemini)
     
     Args:
         prompt: The user prompt
@@ -69,7 +78,14 @@ def call_ai(prompt: str, system_prompt: str = None) -> Optional[str]:
     Returns:
         AI response text or None if failed
     """
-    # Try OpenAI first
+    # Try Bytez first (Preferred Provider)
+    if BYTEZ_AVAILABLE:
+        bytez = get_bytez_client()
+        response = bytez.generate_content(prompt, system_prompt)
+        if response:
+            return response
+
+    # Try OpenAI second
     client = get_openai_client()
     if client:
         try:
