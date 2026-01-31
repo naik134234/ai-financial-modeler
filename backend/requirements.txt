@@ -1,0 +1,15 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+openpyxl==3.1.2
+google-generativeai==0.3.2
+yfinance==0.2.35
+requests==2.31.0
+python-dotenv==1.0.0
+reportlab==4.0.9
+python-pptx==1.0.2
+aiofiles==23.2.1
+pandas==2.2.0
+beautifulsoup4==4.12.3
+lxml==5.1.0
+openai==1.10.0

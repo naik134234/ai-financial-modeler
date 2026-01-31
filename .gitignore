@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Build outputs
+frontend/.next/
+frontend/out/
+frontend/build/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Output files
+backend/output/*.xlsx
+backend/output/*.pdf
+backend/output/*.pptx
+
+# Cache
+backend/cache.db
+*.cache
+
+# Python
+*.egg-info/
+dist/
+build/
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel
+.vercel
