@@ -4,6 +4,8 @@ An AI-powered platform for generating institutional-grade Excel financial models
 
 ![Financial Modeler Screenshot](screenshot.png)
 
+[![Deploy on Spaces](https://huggingface.co/datasets/huggingface/badges/raw/main/deploy-on-spaces-sm.svg)](https://huggingface.co/spaces/new?template=docker)
+
 ## 🚀 Features
 
 ### Core Capabilities
