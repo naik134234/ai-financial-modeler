@@ -507,7 +507,7 @@ export default function Home() {
 
     // Fetch templates on mount
     useEffect(() => {
-        fetch(`${API_BASE}/templates`)
+        fetch(`${API_BASE}/api/templates`)
             .then(res => res.json())
             .then(data => setTemplates(data.templates || {}))
             .catch(err => console.log("Templates not loaded"));
@@ -523,7 +523,7 @@ export default function Home() {
         setIsChatting(true);
 
         try {
-            const response = await fetch(`${API_BASE}/chat/${jobStatus.job_id}`, {
+            const response = await fetch(`${API_BASE}/api/chat/${jobStatus.job_id}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: userMsg, history: chatHistory })
@@ -541,7 +541,7 @@ export default function Home() {
     const fetchSensitivity = async () => {
         if (!jobStatus?.job_id) return;
         try {
-            const response = await fetch(`${API_BASE}/analysis/sensitivity/${jobStatus.job_id}`);
+            const response = await fetch(`${API_BASE}/api/analysis/sensitivity/${jobStatus.job_id}`);
             const data = await response.json();
             setSensitivityData(data.sensitivity);
         } catch (err) {
@@ -553,7 +553,7 @@ export default function Home() {
     const fetchFootballField = async () => {
         if (!jobStatus?.job_id) return;
         try {
-            const response = await fetch(`${API_BASE}/analysis/football-field/${jobStatus.job_id}`);
+            const response = await fetch(`${API_BASE}/api/analysis/football-field/${jobStatus.job_id}`);
             const data = await response.json();
             setFootballFieldData(data.football_field);
             setShowFootballField(true);
@@ -565,7 +565,7 @@ export default function Home() {
     // Fetch US stocks
     const fetchUsStocks = async (query: string) => {
         try {
-            const response = await fetch(`${API_BASE}/stocks/us?search=${query}&limit=20`);
+            const response = await fetch(`${API_BASE}/api/stocks/us?search=${query}&limit=20`);
             const data = await response.json();
             setUsStocks(data.stocks || []);
         } catch (err) {
@@ -2074,9 +2074,14 @@ export default function Home() {
                                                     Download Excel Model
                                                 </a>
 
-                                                {/* PDF Export Button */}
                                                 <button
-                                                    onClick={handleExportPDF}
+                                                    onClick={async () => {
+                                                        try {
+                                                            await downloadExportFile(jobStatus.job_id, "pdf");
+                                                        } catch (err) {
+                                                            alert("PDF export failed. Please try again.");
+                                                        }
+                                                    }}
                                                     className="btn-secondary w-full mt-2 inline-flex items-center justify-center gap-2"
                                                 >
                                                     <FileText className="w-5 h-5" />
@@ -2280,26 +2285,67 @@ export default function Home() {
                                                     </div>
 
                                                     {footballFieldData?.ranges ? (
-                                                        <div className="space-y-3">
-                                                            {footballFieldData.ranges.map((range: any, i: number) => (
-                                                                <div key={i}>
-                                                                    <div className="flex justify-between text-xs text-dark-400 mb-1">
-                                                                        <span>{range.method}</span>
-                                                                        <span>₹{range.low} - ₹{range.high}</span>
-                                                                    </div>
-                                                                    <div className="h-5 bg-dark-800 rounded relative overflow-hidden">
-                                                                        <div
-                                                                            className="absolute h-full rounded"
-                                                                            style={{
-                                                                                backgroundColor: range.color,
-                                                                                left: `${((range.low - footballFieldData.chart_config.min_x) / (footballFieldData.chart_config.max_x - footballFieldData.chart_config.min_x)) * 100}%`,
-                                                                                width: `${((range.high - range.low) / (footballFieldData.chart_config.max_x - footballFieldData.chart_config.min_x)) * 100}%`,
-                                                                                opacity: range.confidence === "high" ? 1 : 0.6
-                                                                            }}
-                                                                        />
+                                                        <div>
+                                                            <div className="relative pt-8 pb-2 px-1">
+                                                                {/* Current Price Vertical Line */}
+                                                                <div
+                                                                    className="absolute top-0 bottom-0 w-px border-l-2 border-dashed border-yellow-400 z-10 opacity-70 pointer-events-none"
+                                                                    style={{
+                                                                        left: `${((footballFieldData.chart_config.current_price_line - footballFieldData.chart_config.min_x) / (footballFieldData.chart_config.max_x - footballFieldData.chart_config.min_x)) * 100}%`
+                                                                    }}
+                                                                >
+                                                                    <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded text-[10px] whitespace-nowrap border border-yellow-500/30 shadow-sm backdrop-blur-sm">
+                                                                        Current: ₹{footballFieldData.chart_config.current_price_line.toFixed(0)}
                                                                     </div>
                                                                 </div>
-                                                            ))}
+
+                                                                <div className="space-y-5">
+                                                                    {footballFieldData.ranges.map((range: any, i: number) => {
+                                                                        const rangeLeft = ((range.low - footballFieldData.chart_config.min_x) / (footballFieldData.chart_config.max_x - footballFieldData.chart_config.min_x)) * 100;
+                                                                        const rangeWidth = ((range.high - range.low) / (footballFieldData.chart_config.max_x - footballFieldData.chart_config.min_x)) * 100;
+
+                                                                        return (
+                                                                            <div key={i} className="relative">
+                                                                                <div className="flex justify-between text-xs text-dark-300 mb-1.5 px-0.5">
+                                                                                    <span className="font-medium text-white">{range.method}</span>
+                                                                                    <span className="font-mono text-[10px] opacity-75">₹{range.low} - ₹{range.high}</span>
+                                                                                </div>
+                                                                                <div className="h-6 bg-dark-800/50 rounded-lg relative overflow-visible border border-dark-700/50">
+                                                                                    {/* Bar */}
+                                                                                    <div
+                                                                                        className="absolute h-full rounded-md shadow-lg transition-all duration-500"
+                                                                                        style={{
+                                                                                            backgroundColor: range.color,
+                                                                                            left: `${rangeLeft}%`,
+                                                                                            width: `${rangeWidth}%`,
+                                                                                            opacity: range.confidence === "high" ? 0.9 : 0.65
+                                                                                        }}
+                                                                                    >
+                                                                                        {/* Midpoint Marker */}
+                                                                                        <div
+                                                                                            className="absolute top-1/2 -translate-y-1/2 h-3 w-3 bg-white rounded-full shadow-sm border-2 border-dark-900 z-20"
+                                                                                            style={{
+                                                                                                left: `${((range.mid - range.low) / (range.high - range.low)) * 100}%`,
+                                                                                                transform: 'translate(-50%, -50%)'
+                                                                                            }}
+                                                                                            title={`Mean: ₹${range.mid}`}
+                                                                                        />
+                                                                                    </div>
+                                                                                </div>
+                                                                                <p className="text-[10px] text-dark-500 mt-1 pl-1 italic">{range.description}</p>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+
+                                                                {/* X Axis */}
+                                                                <div className="flex justify-between text-[10px] text-dark-500 mt-6 border-t border-dark-700/50 pt-2 font-mono">
+                                                                    <span>₹{footballFieldData.chart_config.min_x.toFixed(0)}</span>
+                                                                    <span className="text-dark-600 uppercase tracking-widest">Valuation Range</span>
+                                                                    <span>₹{footballFieldData.chart_config.max_x.toFixed(0)}</span>
+                                                                </div>
+                                                            </div>
+
                                                             {/* Current Price Line & Summary */}
                                                             <div className="mt-4 p-3 rounded-lg" style={{ backgroundColor: footballFieldData.summary.rating_color + "20" }}>
                                                                 <div className="flex items-center justify-between">
@@ -2327,7 +2373,7 @@ export default function Home() {
                                                 </div>
 
                                                 {/* ========== AI CHAT BUTTON ========== */}
-                                                <button
+                                                < button
                                                     onClick={() => setShowChat(!showChat)}
                                                     className="mt-4 w-full p-3 rounded-xl bg-gradient-to-r from-pink-500/20 to-violet-500/20 border border-pink-500/30 hover:border-pink-400/50 transition-all flex items-center justify-center gap-2"
                                                 >

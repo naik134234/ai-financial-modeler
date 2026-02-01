@@ -12,17 +12,32 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 class ChatAssistant:
     """AI-powered chat assistant for financial model Q&A"""
     
-    def __init__(self, model: str = "anthropic/claude-3-haiku"):
+    def __init__(self, model: str = "gpt-4o"):
         self.model = model
-        self.api_key = OPENROUTER_API_KEY or ""
+        self.openai_key = OPENAI_API_KEY
+        self.gemini_key = GEMINI_API_KEY
         self.conversation_history: List[Dict] = []
+        
+        # Configure Gemini if available
+        if self.gemini_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.gemini_key)
+                self.gemini_model = genai.GenerativeModel('gemini-pro')
+                logger.info("ChatAssistant configured with Gemini")
+            except Exception as e:
+                logger.error(f"Failed to configure Gemini: {e}")
+                self.gemini_model = None
+        else:
+            self.gemini_model = None
     
     def create_model_context(self, job_data: Dict) -> str:
         """Create context string from job data for the AI"""
@@ -31,25 +46,33 @@ class ChatAssistant:
         assumptions = job_data.get('assumptions', {})
         valuation = job_data.get('valuation_data', {})
         
+        def safe_fmt(val, fmt="{:,.2f}", prefix=""):
+            if val is None or val == 'N/A':
+                return 'N/A'
+            try:
+                return f"{prefix}{fmt.format(float(val))}"
+            except (ValueError, TypeError):
+                return str(val)
+
         context = f"""You are analyzing a financial model for {company} ({industry} sector).
 
 KEY ASSUMPTIONS:
-- Revenue Growth: {assumptions.get('revenue_growth', 'N/A')}
-- EBITDA Margin: {assumptions.get('ebitda_margin', 'N/A')}
-- WACC: {assumptions.get('wacc', 'N/A')}
-- Terminal Growth: {assumptions.get('terminal_growth', 'N/A')}
-- Tax Rate: {assumptions.get('tax_rate', 'N/A')}
+- Revenue Growth: {safe_fmt(assumptions.get('revenue_growth'), '{:.1%}', '')}
+- EBITDA Margin: {safe_fmt(assumptions.get('ebitda_margin'), '{:.1%}', '')}
+- WACC: {safe_fmt(assumptions.get('wacc'), '{:.1%}', '')}
+- Terminal Growth: {safe_fmt(assumptions.get('terminal_growth'), '{:.1%}', '')}
+- Tax Rate: {safe_fmt(assumptions.get('tax_rate'), '{:.1%}', '')}
 
 VALUATION METRICS:
-- Enterprise Value: ₹{valuation.get('enterprise_value', 'N/A'):,.0f} Cr
-- Equity Value: ₹{valuation.get('equity_value', 'N/A'):,.0f} Cr
-- Implied Share Price: ₹{valuation.get('share_price', 'N/A'):,.2f}
-- Current Market Price: ₹{valuation.get('current_price', 'N/A'):,.2f}
+- Enterprise Value: {safe_fmt(valuation.get('enterprise_value'), '{:,.0f}', '₹')} Cr
+- Equity Value: {safe_fmt(valuation.get('equity_value'), '{:,.0f}', '₹')} Cr
+- Implied Share Price: {safe_fmt(valuation.get('share_price'), '{:,.2f}', '₹')}
+- Current Market Price: {safe_fmt(valuation.get('current_price'), '{:,.2f}', '₹')}
 
 COMPANY FINANCIALS:
-- Revenue: ₹{assumptions.get('base_revenue', 'N/A'):,.0f} Cr
-- EBITDA: ₹{assumptions.get('base_ebitda', 'N/A'):,.0f} Cr
-- Net Debt: ₹{valuation.get('net_debt', 'N/A'):,.0f} Cr
+- Revenue: {safe_fmt(assumptions.get('base_revenue'), '{:,.0f}', '₹')} Cr
+- EBITDA: {safe_fmt(assumptions.get('base_ebitda'), '{:,.0f}', '₹')} Cr
+- Net Debt: {safe_fmt(valuation.get('net_debt'), '{:,.0f}', '₹')} Cr
 
 You are a helpful financial analyst assistant. Answer questions about this model concisely.
 When discussing valuation, explain the key drivers and risks.
@@ -65,16 +88,38 @@ For what-if scenarios, estimate the directional impact on valuation."""
     ) -> Dict[str, Any]:
         """
         Send a chat message and get AI response
-        
-        Args:
-            message: User's question
-            job_data: Current model data for context
-            chat_history: Previous messages in conversation
-        
-        Returns:
-            AI response with metadata
+        Prioritizes Gemini if available, falls back to OpenAI
         """
         try:
+            # Try Gemini First
+            if self.gemini_model:
+                try:
+                    context = self.create_model_context(job_data)
+                    
+                    # Construct prompt with context
+                    prompt = f"{context}\n\nUSER QUESTION: {message}"
+                    
+                    # Simple generation for now (history handling depends on user pref)
+                    response = self.gemini_model.generate_content(prompt)
+                    
+                    return {
+                        "success": True,
+                        "response": response.text,
+                        "model": "gemini-pro",
+                        "tokens_used": 0
+                    }
+                except Exception as e:
+                    logger.error(f"Gemini chat error: {e}")
+                    # Fallthrough to OpenAI if valid key
+            
+            # Fallback to OpenAI
+            if not self.openai_key:
+                 return {
+                    "success": False,
+                    "response": "Error: configured AI providers unavailable. Check API keys.",
+                    "error": "Missing API Keys"
+                }
+
             context = self.create_model_context(job_data)
             
             messages = [{"role": "system", "content": context}]
@@ -91,11 +136,10 @@ For what-if scenarios, estimate the directional impact on valuation."""
             messages.append({"role": "user", "content": message})
             
             response = requests.post(
-                OPENROUTER_URL,
+                OPENAI_URL,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "http://localhost:3000",
+                    "Authorization": f"Bearer {self.openai_key}",
+                    "Content-Type": "application/json"
                 },
                 json={
                     "model": self.model,

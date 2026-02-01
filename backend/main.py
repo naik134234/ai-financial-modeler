@@ -3,6 +3,11 @@ AI Financial Modeling Platform - Main API Server
 FastAPI backend for generating institutional-grade Excel financial models
 """
 
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -611,13 +616,22 @@ async def _generate_model_task(
         filename = f"{symbol}_{industry_info['model_type']}_{timestamp}.xlsx"
         output_path = os.path.join(OUTPUT_DIR, filename)
         
-        generate_financial_model(
+        result = generate_financial_model(
             company_name=company_info.get('name', symbol),
             model_structure=model_structure,
             financial_data=financial_data,
             industry_info=industry_info,
             output_path=output_path,
         )
+        
+        # Store results for API access (Chat, Sensitivity, Loading)
+        if isinstance(result, dict):
+            jobs[job_id]["valuation_data"] = result.get("valuation_data", {})
+            jobs[job_id]["assumptions"] = result.get("assumptions", {})
+        else:
+            # Fallback for legacy generator if it returns void/path
+            jobs[job_id]["valuation_data"] = {}
+            jobs[job_id]["assumptions"] = {}
         
         jobs[job_id]["progress"] = 90
         jobs[job_id]["message"] = "Validating model..."
@@ -700,6 +714,63 @@ async def download_model(job_id: str):
         filename=job.get("filename", "financial_model.xlsx"),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@app.get("/api/export/{job_id}")
+async def export_file(job_id: str, format: str = "pdf"):
+    """Generate and download report in specified format"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs[job_id]
+    
+    if job["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Model not ready")
+        
+    excel_path = job.get("file_path")
+    if not excel_path or not os.path.exists(excel_path):
+        raise HTTPException(status_code=404, detail="Excel file not found")
+    
+    if format.lower() == "pdf":
+        # Generate PDF path
+        pdf_path = excel_path.replace(".xlsx", ".pdf")
+        
+        # Check if already exists
+        if os.path.exists(pdf_path):
+            return FileResponse(
+                path=pdf_path,
+                filename=job.get("filename", "report.pdf").replace(".xlsx", ".pdf"),
+                media_type="application/pdf"
+            )
+            
+        # Generate it
+        company_name = job.get("company_name", "Company")
+        success = pdf_exporter.create_pdf_report(company_name, excel_path, pdf_path)
+        
+        if not success:
+            # Fallback: try using stored data
+            valuation_data = job.get("valuation_data", {})
+            assumptions = job.get("assumptions", {})
+            industry = job.get("industry", "General")
+            
+            if valuation_data:
+                success = pdf_exporter.generate_pdf_report(
+                    pdf_path, company_name, industry, valuation_data, assumptions
+                )
+                
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to generate PDF report")
+            
+        return FileResponse(
+            path=pdf_path,
+            filename=job.get("filename", "report.pdf").replace(".xlsx", ".pdf"),
+            media_type="application/pdf"
+        )
+    elif format.lower() == "pptx":
+         # Placeholder for PPTX
+         raise HTTPException(status_code=501, detail="PPTX export not implemented yet")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
 
 
 @app.get("/api/industries")
@@ -2513,9 +2584,13 @@ async def get_football_field(job_id: str):
         from analysis.football_field import create_football_field
         
         valuation_data = job.get("valuation_data", {})
+        # Merge financial data (analyst targets, etc.) from Yahoo Finance
+        financial_data = job.get("financial_data", {})
+        merged_data = {**financial_data, **valuation_data}
+        
         monte_carlo = job.get("monte_carlo_results")
         
-        football_field = create_football_field(valuation_data, monte_carlo)
+        football_field = create_football_field(merged_data, monte_carlo)
         
         return {
             "job_id": job_id,

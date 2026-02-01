@@ -11,7 +11,10 @@ from io import BytesIO
 import os
 from datetime import datetime, timedelta
 import json
-import xlrd
+try:
+    import xlrd
+except ImportError:
+    xlrd = None
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +89,10 @@ def _fetch_excel_data(url: str, dataset_name: str) -> List[List[Any]]:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         
+        if not xlrd:
+            logger.warning("xlrd not installed, cannot parse .xls file")
+            return []
+            
         # Read Excel file using xlrd
         workbook = xlrd.open_workbook(file_contents=response.content)
         sheet = workbook.sheet_by_index(0)
