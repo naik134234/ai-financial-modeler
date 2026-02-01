@@ -20,23 +20,45 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 class ChatAssistant:
     """AI-powered chat assistant for financial model Q&A"""
     
+
     def __init__(self, model: str = "gpt-4o"):
         self.model = model
-        self.openai_key = OPENAI_API_KEY
-        self.gemini_key = GEMINI_API_KEY
+        
+        # Explicitly load .env from backend root
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.dirname(os.path.dirname(current_dir)) # agents -> backend -> root (wait, agents is in backend)
+        # agents is in backend. so dirname(agents) is backend.
+        backend_dir = os.path.dirname(current_dir)
+        env_path = os.path.join(backend_dir, '.env')
+        
+        from dotenv import load_dotenv
+        load_dotenv(env_path)
+        
+        # Re-fetch to ensure fresh env vars
+        self.openai_key = os.getenv("OPENAI_API_KEY")
+        self.gemini_key = os.getenv("GEMINI_API_KEY")
         self.conversation_history: List[Dict] = []
         
+        print(f"--------- CHAT ASSISTANT INIT ---------")
+        print(f"OpenAI Key Present: {bool(self.openai_key)}")
+        print(f"Gemini Key Present: {bool(self.gemini_key)}")
+        if self.gemini_key:
+             print(f"Gemini Key: {self.gemini_key[:5]}...{self.gemini_key[-5:]}")
+
         # Configure Gemini if available
         if self.gemini_key:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=self.gemini_key)
                 self.gemini_model = genai.GenerativeModel('gemini-pro')
+                print("✅ ChatAssistant configured with Gemini")
                 logger.info("ChatAssistant configured with Gemini")
             except Exception as e:
+                print(f"❌ Failed to configure Gemini: {e}")
                 logger.error(f"Failed to configure Gemini: {e}")
                 self.gemini_model = None
         else:
+            print("⚠️ No Gemini Key found, skipping Gemini config")
             self.gemini_model = None
     
     def create_model_context(self, job_data: Dict) -> str:

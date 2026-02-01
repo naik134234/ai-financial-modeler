@@ -129,6 +129,22 @@ def create_football_field(
         'confidence': 'high'
     })
     
+    # 6. Analyst Consensus (if available)
+    target_low = valuation_data.get('targetLowPrice')
+    target_high = valuation_data.get('targetHighPrice')
+    target_mean = valuation_data.get('targetMeanPrice')
+    
+    if target_low and target_high:
+        ranges.append({
+            'method': 'Analyst Consensus',
+            'description': 'Wall St. Target Price Range',
+            'low': round(target_low, 2),
+            'mid': round(target_mean, 2) if target_mean else round((target_low + target_high) / 2, 2),
+            'high': round(target_high, 2),
+            'color': '#EC4899',  # Pink
+            'confidence': 'high'
+        })
+    
     # Calculate summary statistics
     all_lows = [r['low'] for r in ranges]
     all_highs = [r['high'] for r in ranges]

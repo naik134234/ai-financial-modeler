@@ -3,11 +3,12 @@ AI Financial Modeling Platform - Main API Server
 FastAPI backend for generating institutional-grade Excel financial models
 """
 
+import os
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
-
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+load_dotenv(env_path)
 from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -613,7 +614,17 @@ async def _generate_model_task(
         
         # Step 7: Generate Excel file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{symbol}_{industry_info['model_type']}_{timestamp}.xlsx"
+        
+        # Check for template
+        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "template.xlsm")
+        use_template = os.path.exists(template_path)
+        
+        if use_template:
+            filename = f"{symbol}_{industry_info['model_type']}_{timestamp}.xlsm"
+            logger.info(f"Using template from {template_path}")
+        else:
+            filename = f"{symbol}_{industry_info['model_type']}_{timestamp}.xlsx"
+            
         output_path = os.path.join(OUTPUT_DIR, filename)
         
         result = generate_financial_model(
@@ -622,6 +633,7 @@ async def _generate_model_task(
             financial_data=financial_data,
             industry_info=industry_info,
             output_path=output_path,
+            template_path=template_path if use_template else None
         )
         
         # Store results for API access (Chat, Sensitivity, Loading)
@@ -709,10 +721,16 @@ async def download_model(job_id: str):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
+    filename = job.get("filename", "financial_model.xlsx")
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    
+    if filename.endswith(".xlsm"):
+        media_type = "application/vnd.ms-excel.sheet.macroEnabled.12"
+    
     return FileResponse(
         path=file_path,
-        filename=job.get("filename", "financial_model.xlsx"),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+        media_type=media_type,
     )
 
 

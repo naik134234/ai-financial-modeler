@@ -4,6 +4,8 @@ import json
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, timedelta
 import random
+import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,89 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
 ]
 
+# Common US stock exchanges - symbols from these don't need suffix
+US_EXCHANGES = ['NYSE', 'NASDAQ', 'AMEX']
+
+# Session manager for Yahoo Finance with crumb authentication
+class YahooSession:
+    _instance = None
+    _session = None
+    _crumb = None
+    _last_refresh = None
+    
+    @classmethod
+    def get_session(cls):
+        """Get or create a session with valid crumb"""
+        current_time = time.time()
+        
+        # Refresh session every 15 minutes
+        if cls._session is None or cls._crumb is None or \
+           (cls._last_refresh and current_time - cls._last_refresh > 900):
+            cls._refresh_session()
+        
+        return cls._session, cls._crumb
+    
+    @classmethod
+    def _refresh_session(cls):
+        """Refresh the session and get a new crumb"""
+        cls._session = requests.Session()
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        cls._session.headers.update(headers)
+        
+        try:
+            # First, visit main page to get cookies
+            cls._session.get('https://finance.yahoo.com', timeout=10)
+            
+            # Try to get crumb
+            crumb_url = "https://query1.finance.yahoo.com/v1/test/getcrumb"
+            response = cls._session.get(crumb_url, timeout=10)
+            
+            if response.status_code == 200:
+                cls._crumb = response.text
+                logger.info(f"Got Yahoo crumb: {cls._crumb[:10]}...")
+            else:
+                logger.warning(f"Failed to get crumb: {response.status_code}")
+                cls._crumb = None
+            
+            cls._last_refresh = time.time()
+        except Exception as e:
+            logger.error(f"Failed to refresh Yahoo session: {e}")
+            cls._crumb = None
+
+def _is_us_stock(symbol: str) -> bool:
+    """Check if symbol is likely a US stock (no suffix needed)"""
+    # If already has a suffix like .NS, .BO, .L, etc., it's not a plain US stock
+    if '.' in symbol:
+        return False
+    # US stocks are typically 1-5 uppercase letters without suffix
+    # Common indicators: no numbers, all caps, short length
+    return symbol.isalpha() and symbol.isupper() and len(symbol) <= 5
+
+def _format_symbol(symbol: str, exchange: str = None) -> str:
+    """Format symbol with appropriate suffix based on exchange"""
+    # If already has a suffix, return as-is
+    if '.' in symbol:
+        return symbol
+    
+    # If exchange is specified as US-based, return without suffix
+    if exchange and exchange.upper() in ['NYSE', 'NASDAQ', 'AMEX', 'US']:
+        return symbol
+    
+    # If exchange is Indian, add appropriate suffix
+    if exchange and exchange.upper() in ['NSE', 'BSE']:
+        return f"{symbol}.NS" if exchange.upper() == 'NSE' else f"{symbol}.BO"
+    
+    # Try to auto-detect: if it looks like a US stock, don't add suffix
+    # Otherwise default to Indian NSE
+    if _is_us_stock(symbol):
+        return symbol
+    
+    return f"{symbol}.NS"
+
 def _get_headers():
     return {
         'User-Agent': random.choice(USER_AGENTS),
@@ -25,21 +110,93 @@ def _get_headers():
         'Accept-Language': 'en-US,en;q=0.5',
     }
 
+def _make_yahoo_request(url: str, timeout: int = 15) -> Optional[requests.Response]:
+    """Make a request to Yahoo Finance with session and crumb"""
+    try:
+        session, crumb = YahooSession.get_session()
+        
+        # Add crumb if available
+        if crumb:
+            separator = '&' if '?' in url else '?'
+            url = f"{url}{separator}crumb={crumb}"
+        
+        response = session.get(url, timeout=timeout)
+        
+        # If unauthorized, refresh session and retry
+        if response.status_code == 401:
+            logger.info("Session expired, refreshing...")
+            YahooSession._refresh_session()
+            session, crumb = YahooSession.get_session()
+            if crumb:
+                # Rebuild URL with new crumb
+                base_url = url.split('crumb=')[0].rstrip('&?')
+                separator = '&' if '?' in base_url else '?'
+                url = f"{base_url}{separator}crumb={crumb}"
+            response = session.get(url, timeout=timeout)
+        
+        return response
+    except Exception as e:
+        logger.error(f"Yahoo request failed: {e}")
+        # Fallback to simple request without session
+        try:
+            return requests.get(url.split('crumb=')[0].rstrip('&?'), 
+                              headers=_get_headers(), timeout=timeout)
+        except:
+            return None
+
+def _get_basic_info_from_chart(symbol: str, exchange: str = None) -> Optional[Dict[str, Any]]:
+    """Fallback: Get basic stock info from Chart API which doesn't require auth"""
+    try:
+        formatted_symbol = _format_symbol(symbol, exchange)
+        url = f"{CHART_URL}{formatted_symbol}?range=1d&interval=1d"
+        
+        response = requests.get(url, headers=_get_headers(), timeout=15)
+        if response.status_code != 200:
+            return None
+        
+        data = response.json()
+        chart_result = data.get('chart', {}).get('result', [{}])
+        if not chart_result:
+            return None
+        
+        meta = chart_result[0].get('meta', {})
+        
+        # Get latest price
+        indicators = chart_result[0].get('indicators', {})
+        quote = indicators.get('quote', [{}])[0] if indicators else {}
+        closes = quote.get('close', [])
+        current_price = closes[-1] if closes else meta.get('regularMarketPrice', 0)
+        
+        return {
+            "symbol": meta.get('symbol', symbol).replace('.NS', '').replace('.BO', ''),
+            "name": meta.get('shortName', meta.get('longName', symbol)),
+            "currency": meta.get('currency', 'USD'),
+            "exchange": meta.get('exchangeName', exchange or 'Unknown'),
+            "current_price": current_price,
+            "previous_close": meta.get('chartPreviousClose', 0),
+            "regular_market_price": meta.get('regularMarketPrice', current_price),
+            # Mark as basic info only
+            "_source": "chart_api"
+        }
+    except Exception as e:
+        logger.error(f"Chart API fallback failed for {symbol}: {e}")
+        return None
+
 class YahooFinanceCollector:
     """Class to fetch data from Yahoo Finance without yfinance"""
     
-    def __init__(self, symbol: str, exchange: str = "NSE"):
+    def __init__(self, symbol: str, exchange: str = None):
         self.symbol = symbol
         self.exchange = exchange
-        self.ticker_symbol = f"{symbol}.NS" if exchange == "NSE" else f"{symbol}.BO"
-        if '.' in symbol: # Already formatted
-            self.ticker_symbol = symbol
+        # Use the new _format_symbol helper for proper US/Indian stock handling
+        self.ticker_symbol = _format_symbol(symbol, exchange)
             
     def get_data(self) -> Dict[str, Any]:
         """Get all available data for the symbol"""
-        info = get_stock_info(self.ticker_symbol)
-        financials = get_historical_financials(self.ticker_symbol)
-        price_history = get_price_history(self.ticker_symbol)
+        # Pass exchange to helper functions for proper symbol formatting
+        info = get_stock_info(self.symbol, self.exchange)
+        financials = get_historical_financials(self.symbol, exchange=self.exchange)
+        price_history = get_price_history(self.symbol, exchange=self.exchange)
         
         return {
             "company_info": info if info else {},
@@ -55,21 +212,34 @@ async def fetch_stock_data(symbol: str, exchange: str = "NSE") -> Dict[str, Any]
     collector = YahooFinanceCollector(symbol, exchange)
     return collector.get_data()
 
-def get_stock_info(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch basic stock info directly from Yahoo API"""
+def get_stock_info(symbol: str, exchange: str = None) -> Optional[Dict[str, Any]]:
+    """Fetch basic stock info directly from Yahoo API
+    
+    Args:
+        symbol: Stock symbol (e.g., AAPL for US, RELIANCE for India)
+        exchange: Optional exchange hint (NYSE, NASDAQ, NSE, BSE)
+    """
+    original_symbol = symbol
     try:
-        if not (symbol.endswith('.NS') or symbol.endswith('.BO')):
-            symbol = f"{symbol}.NS"
+        # Format symbol based on exchange or auto-detect
+        formatted_symbol = _format_symbol(symbol, exchange)
+        symbol = formatted_symbol
             
         modules = "financialData,quoteType,summaryDetail,price,defaultKeyStatistics,summaryProfile"
         url = f"{BASE_URL}{symbol}?modules={modules}"
         
-        response = requests.get(url, headers=_get_headers(), timeout=15)
-        response.raise_for_status()
+        response = _make_yahoo_request(url, timeout=15)
+        if not response or response.status_code != 200:
+            logger.warning(f"Yahoo QuoteSummary API failed for {symbol}, trying chart API fallback...")
+            # Try chart API fallback
+            return _get_basic_info_from_chart(original_symbol, exchange)
+        
         data = response.json()
         
         if 'quoteSummary' not in data or not data['quoteSummary']['result']:
-            return None
+            # Try chart API fallback
+            logger.info(f"No quoteSummary data for {symbol}, trying chart API fallback...")
+            return _get_basic_info_from_chart(original_symbol, exchange)
             
         result = data['quoteSummary']['result'][0]
         
@@ -125,19 +295,30 @@ def get_stock_info(symbol: str) -> Optional[Dict[str, Any]]:
         return info
     except Exception as e:
         logger.error(f"Error in get_stock_info for {symbol}: {e}")
-        return None
+        # Try chart API fallback on exception
+        return _get_basic_info_from_chart(original_symbol, exchange)
 
-def get_historical_financials(symbol: str, years: int = 5) -> Optional[Dict[str, Any]]:
-    """Fetch historical financials from Yahoo API"""
+def get_historical_financials(symbol: str, years: int = 5, exchange: str = None) -> Optional[Dict[str, Any]]:
+    """Fetch historical financials from Yahoo API
+    
+    Args:
+        symbol: Stock symbol
+        years: Number of years of data
+        exchange: Optional exchange hint (NYSE, NASDAQ, NSE, BSE)
+    """
     try:
-        if not (symbol.endswith('.NS') or symbol.endswith('.BO')):
-            symbol = f"{symbol}.NS"
+        # Format symbol based on exchange or auto-detect
+        formatted_symbol = _format_symbol(symbol, exchange)
+        symbol = formatted_symbol
 
         modules = "incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory"
         url = f"{BASE_URL}{symbol}?modules={modules}"
         
-        response = requests.get(url, headers=_get_headers(), timeout=15)
-        response.raise_for_status()
+        response = _make_yahoo_request(url, timeout=15)
+        if not response or response.status_code != 200:
+            logger.warning(f"Yahoo API returned status {response.status_code if response else 'None'} for {symbol} financials")
+            return None
+        
         data = response.json()
         
         if 'quoteSummary' not in data or not data['quoteSummary']['result']:
@@ -207,19 +388,29 @@ def get_historical_financials(symbol: str, years: int = 5) -> Optional[Dict[str,
         logger.error(f"Error in get_historical_financials for {symbol}: {e}")
         return None
 
-def get_price_history(symbol: str, period: str = "5y") -> Optional[Dict[str, Any]]:
-    """Fetch price history using Chart API"""
+def get_price_history(symbol: str, period: str = "5y", exchange: str = None) -> Optional[Dict[str, Any]]:
+    """Fetch price history using Chart API
+    
+    Args:
+        symbol: Stock symbol
+        period: Time period (1y, 2y, 5y, 10y, max)
+        exchange: Optional exchange hint (NYSE, NASDAQ, NSE, BSE)
+    """
     try:
-        if not (symbol.endswith('.NS') or symbol.endswith('.BO')):
-            symbol = f"{symbol}.NS"
+        # Format symbol based on exchange or auto-detect
+        formatted_symbol = _format_symbol(symbol, exchange)
+        symbol = formatted_symbol
             
         # Map period to YF range
         range_map = {"1y": "1y", "2y": "2y", "5y": "5y", "10y": "10y", "max": "max"}
         r = range_map.get(period, "5y")
         
         url = f"{CHART_URL}{symbol}?range={r}&interval=1d"
-        response = requests.get(url, headers=_get_headers(), timeout=15)
-        response.raise_for_status()
+        response = _make_yahoo_request(url, timeout=15)
+        if not response or response.status_code != 200:
+            logger.warning(f"Yahoo Chart API returned status {response.status_code if response else 'None'} for {symbol}")
+            return None
+        
         data = response.json()
         
         chart = data.get('chart', {}).get('result', [{}])[0]

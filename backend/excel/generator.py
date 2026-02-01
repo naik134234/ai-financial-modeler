@@ -121,13 +121,25 @@ class FinancialModelGenerator:
         model_structure: Dict[str, Any],
         financial_data: Dict[str, Any],
         industry_info: Dict[str, Any],
+        template_path: Optional[str] = None
     ):
         self.company_name = company_name
         self.structure = model_structure
         self.data = financial_data
         self.industry = industry_info
-        self.wb = Workbook()
-        self.styles = ExcelStyler.create_styles(self.wb)
+        
+        if template_path and os.path.exists(template_path):
+            try:
+                logger.info(f"Loading template from {template_path}")
+                self.wb = openpyxl.load_workbook(template_path, keep_vba=True)
+                self.styles = ExcelStyler.create_styles(self.wb) # Re-register styles if needed
+            except Exception as e:
+                logger.error(f"Failed to load template {template_path}: {e}")
+                self.wb = Workbook()
+                self.styles = ExcelStyler.create_styles(self.wb)
+        else:
+            self.wb = Workbook()
+            self.styles = ExcelStyler.create_styles(self.wb)
         
         # Config
         self.hist_years = 5
@@ -136,6 +148,10 @@ class FinancialModelGenerator:
         
         # Store row mappings for cross-sheet references
         self.row_map = {}
+        
+        # Store calculated data for API return
+        self.final_assumptions = {}
+        self.valuation_summary = {}
     
     def generate(self, output_path: str) -> str:
         """Generate complete Excel model"""
@@ -157,8 +173,17 @@ class FinancialModelGenerator:
         # Save
         os.makedirs(os.path.dirname(output_path), exist_ok=True) if os.path.dirname(output_path) else None
         self.wb.save(output_path)
+        self.wb.save(output_path)
         logger.info(f"Generated: {output_path}")
-        return output_path
+        
+        # Calculate python-side valuation for API
+        self._calculate_valuation_python()
+        
+        return {
+            "output_path": output_path,
+            "valuation_data": self.valuation_summary,
+            "assumptions": self.final_assumptions
+        }
     
     def _setup_sheet(self, name: str, title: str) -> tuple:
         """Setup a sheet with headers"""
@@ -358,6 +383,19 @@ class FinancialModelGenerator:
                     self.row_map[name] = row
                 except:
                     pass
+                
+                # Store for API return
+                slug = name.lower().replace(' ', '_').replace('/', '_').replace('&', 'and').replace('(', '').replace(')', '').replace('%', 'percent')
+                # Handle specific keys expected by tornado_analysis
+                if "revenue_growth" in slug: self.final_assumptions['revenue_growth'] = value
+                elif "ebitda_margin" in slug: self.final_assumptions['ebitda_margin'] = value
+                elif "terminal_growth" in slug: self.final_assumptions['terminal_growth'] = value
+                elif "wacc" in slug and "cost" not in slug: self.final_assumptions['wacc'] = value
+                elif "tax_rate" in slug: self.final_assumptions['tax_rate'] = value
+                elif "capex" in slug and "percent" in slug: self.final_assumptions['capex_percent'] = value
+                
+                # Store all
+                self.final_assumptions[slug] = value
             
             row += 1
         
@@ -1797,16 +1835,85 @@ class FinancialModelGenerator:
         
         ws.add_chart(chart4, "B32")
 
+    def _calculate_valuation_python(self) -> None:
+        """Calculate valuation metrics in Python for API usage"""
+        try:
+            # Inputs
+            rev = self.base_financials.get('revenue', 0)
+            rev_growth = self.final_assumptions.get('revenue_growth', 0.10)
+            ebitda_margin = self.final_assumptions.get('ebitda_margin', 0.20)
+            tax_rate = self.final_assumptions.get('tax_rate', 0.25)
+            wacc = self.final_assumptions.get('wacc', 0.12)
+            terminal_growth = self.final_assumptions.get('terminal_growth', 0.04)
+            
+            shares = self.final_assumptions.get('shares_outstanding_cr', 0)
+            if shares == 0: shares = 10.0
+            
+            # Simple DCF for summary
+            # Project 5 years
+            pvs = []
+            current_rev = rev
+            
+            for i in range(1, 6):
+                current_rev *= (1 + rev_growth)
+                ebitda = current_rev * ebitda_margin
+                # Proxy FCFF: EBITDA * (1-t) - Investment (approx 10% of EBITDA)
+                # Better: FCFF ~ EBITDA * 0.6 (proxy for NOPAT + D&A - Capex - WC)
+                fcff = ebitda * 0.6 
+                
+                pv = fcff / ((1 + wacc) ** i)
+                pvs.append(pv)
+                
+            sum_pvs = sum(pvs)
+            
+            # Terminal Value
+            last_fcff = pvs[-1] * ((1 + wacc) ** 5) # Convert back to FV
+            terminal_val = last_fcff * (1 + terminal_growth) / (wacc - terminal_growth)
+            pv_tv = terminal_val / ((1 + wacc) ** 5)
+            
+            enterprise_value = sum_pvs + pv_tv
+            
+            # Net Debt proxy (assuming 20% of EV is debt for simplicity if not known)
+            net_debt = enterprise_value * 0.1 
+            
+            equity_value = enterprise_value - net_debt
+            share_price = equity_value / shares * 10 # *10 if numbers are in Cr -> share price in Rupees (depends on share count units)
+            # Actually, Shares is in Cr. Equity is in Cr.
+            # Equity (Cr) / Shares (Cr) = Price (Rupees) if Price was huge. 
+            # Wait. Share Price = Equity / Shares.
+            # If Equity = 1000 Cr, Shares = 10 Cr. Price = 100.
+            # So straightforward division.
+            share_price = equity_value / shares
+            
+            self.valuation_summary = {
+                'enterprise_value': round(enterprise_value, 2),
+                'equity_value': round(equity_value, 2),
+                'share_price': round(share_price, 2),
+                'wacc': wacc,
+                'method': 'DCF',
+                'currency': 'INR'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating python valuation: {e}")
+            self.valuation_summary = {
+                'enterprise_value': 0,
+                'equity_value': 0,
+                'share_price': 0,
+                'error': str(e)
+            }
+
 
 def generate_financial_model(
     company_name: str,
     model_structure: Dict[str, Any],
     financial_data: Dict[str, Any],
     industry_info: Dict[str, Any],
-    output_path: str
-) -> str:
+    output_path: str,
+    template_path: Optional[str] = None
+) -> Dict[str, Any]:
     """Generate financial model"""
     generator = FinancialModelGenerator(
-        company_name, model_structure, financial_data, industry_info
+        company_name, model_structure, financial_data, industry_info, template_path
     )
     return generator.generate(output_path)
