@@ -10,7 +10,7 @@ ENV NEXT_PUBLIC_API_URL=/api
 RUN npm run build
 
 # 2. Build Backend & Serve
-FROM python:3.9-slim
+FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies (for optional PDF/Image stuff)
